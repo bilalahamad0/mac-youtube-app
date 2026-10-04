@@ -70,10 +70,14 @@ jobs:
 
       # Piped like `curl | bash`. By now the Dock has restarted and may have
       # rewritten the tile, so this also checks the tile is still recognised.
+      # Updates must not restart the Dock: a restart brings minimized windows
+      # back on screen.
       - name: Update while running (piped)
         run: |
+          dock_pid="$(pgrep -x Dock)"
           bash -s -- --no-launch < install.sh | tee rerun.log
           grep -q 'already in the Dock' rerun.log
+          test "$(pgrep -x Dock)" = "$dock_pid"
           apps="$(defaults read com.apple.dock persistent-apps)"
           count="$(grep -c 'Applications/YouTube.app' <<< "$apps" || true)"
           test "$count" -eq 1

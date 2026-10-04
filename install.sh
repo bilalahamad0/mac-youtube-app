@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 APP_NAME="YouTube"
 # Kept stable across versions: WebKit stores the YouTube login under this id.
 BUNDLE_ID="com.local.youtubeapp"
@@ -31,6 +31,8 @@ LOCK_DIR="${TMPDIR:-/tmp}/mac-youtube-app.$(id -u).lock"
 
 ACTION="install"
 MANAGE_DOCK=1
+ASSUME_YES=0
+DOCK_RESTART_OK="yes"
 LAUNCH_AFTER_INSTALL=1
 KEEP_DATA=0
 TMP_DIR=""
@@ -59,6 +61,8 @@ Options:
   --uninstall   Remove ${APP_NAME}.app, its Dock tile and its data (login, cache)
   --keep-data   With --uninstall: keep the YouTube login and settings
   --no-dock     Don't add (or, with --uninstall, remove) the Dock tile
+  -y, --yes     Don't ask before restarting the Dock (it restarts only when
+                the tile is added or removed; minimized windows reappear)
   --no-launch   Don't open the app after installing
   --version     Print the installer version
   -h, --help    Show this help
@@ -74,6 +78,7 @@ parse_args() {
             --uninstall) ACTION="uninstall" ;;
             --keep-data) KEEP_DATA=1 ;;
             --no-dock)   MANAGE_DOCK=0 ;;
+            -y|--yes)    ASSUME_YES=1 ;;
             --no-launch) LAUNCH_AFTER_INSTALL=0 ;;
             --version)   echo "$VERSION"; exit 0 ;;
             -h|--help)   usage; exit 0 ;;
@@ -865,10 +870,46 @@ restart_dock() {
     fi
 }
 
+dock_is_locked() {
+    [[ "$(defaults read "$DOCK_DOMAIN" contents-immutable 2>/dev/null || true)" == "1" ]]
+}
+
+# True when pinning would change the Dock, and so restart it.
+dock_needs_pin() {
+    local plist="${TMP_DIR}/dock.plist"
+    ! dock_is_locked && dock_export "$plist" && [[ -z "$(dock_tile_indexes "$plist" path)" ]]
+}
+
+# True when there's a tile of ours to remove.
+dock_has_tile() {
+    local plist="${TMP_DIR}/dock.plist"
+    dock_export "$plist" && [[ -n "$(dock_tile_indexes "$plist" any)" ]]
+}
+
+# Only Apple-signed apps such as Safari may add Dock tiles while the Dock is
+# running; everyone else edits its preferences and restarts it, and macOS
+# then brings every minimized window back on screen. So ask first, while
+# there's a terminal to ask in (curl | bash still has /dev/tty). Runs with
+# --yes, without a terminal (CI, cron) or with no Dock running go ahead.
+confirm_dock_restart() {
+    local what="$1" answer=""
+    DOCK_RESTART_OK="yes"
+    if [[ "$ASSUME_YES" -eq 1 || "$DOCK_DOMAIN" != "com.apple.dock" ]]; then return 0; fi
+    pgrep -x -u "$(id -u)" Dock >/dev/null 2>&1 || return 0
+    ( exec </dev/tty ) 2>/dev/null || return 0
+
+    step "The Dock has to restart to ${what}. macOS brings minimized windows back on screen when it does."
+    printf '    Restart the Dock? [Y/n] '
+    read -r answer </dev/tty || answer=""
+    case "$answer" in
+        [nN]*) DOCK_RESTART_OK="no" ;;
+    esac
+}
+
 pin_to_dock() {
     local plist="${TMP_DIR}/dock.plist"
 
-    if [[ "$(defaults read "$DOCK_DOMAIN" contents-immutable 2>/dev/null || true)" == "1" ]]; then
+    if dock_is_locked; then
         warn "The Dock is locked (contents-immutable), so ${APP_NAME}.app wasn't pinned.
          On a work or school Mac, ask your administrator."
         return 0
@@ -880,7 +921,6 @@ pin_to_dock() {
     fi
     if [[ -n "$(dock_tile_indexes "$plist" path)" ]]; then
         step "${APP_NAME}.app is already in the Dock"
-        restart_dock    # refresh the tile's icon
         return 0
     fi
 
@@ -940,12 +980,22 @@ install_app() {
          the installer with YT_APP_DIR=/Applications; --uninstall removes both."
     fi
 
+    # Ask now rather than after the build, while the user is still watching.
+    if [[ "$MANAGE_DOCK" -eq 1 ]] && dock_needs_pin; then
+        confirm_dock_restart "add ${APP_NAME} to it"
+    fi
+
     local built="${TMP_DIR}/${APP_NAME}.app"
     build_bundle "$built"
     install_bundle "$built"
 
     if [[ "$MANAGE_DOCK" -eq 1 ]]; then
-        pin_to_dock
+        if [[ "$DOCK_RESTART_OK" == "no" ]]; then
+            step "Left the Dock alone. To keep ${APP_NAME} in it: open the app, Control-click its
+    Dock icon and choose Options > Keep in Dock."
+        else
+            pin_to_dock
+        fi
     fi
     if [[ "$LAUNCH_AFTER_INSTALL" -eq 1 ]]; then
         open "$APP_PATH" >/dev/null 2>&1 || true
@@ -959,6 +1009,9 @@ uninstall_app() {
     step "Uninstalling ${APP_NAME}.app"
     if [[ -d "$APP_DIR" ]]; then
         canonicalize_app_dir
+    fi
+    if [[ "$MANAGE_DOCK" -eq 1 ]] && dock_has_tile; then
+        confirm_dock_restart "remove the ${APP_NAME} tile"
     fi
 
     local bundle found=0
@@ -980,7 +1033,11 @@ uninstall_app() {
     fi
 
     if [[ "$MANAGE_DOCK" -eq 1 ]]; then
-        unpin_from_dock
+        if [[ "$DOCK_RESTART_OK" == "no" ]]; then
+            step "Left the Dock alone. Drag the ${APP_NAME} tile out of the Dock to remove it."
+        else
+            unpin_from_dock
+        fi
     fi
     if [[ "$KEEP_DATA" -eq 1 ]]; then
         step "Kept ${APP_NAME}.app data (--keep-data)"

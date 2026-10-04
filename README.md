@@ -30,6 +30,14 @@ The installer doesn't need `sudo`. It:
 3. Installs it to `~/Applications/YouTube.app`.
 4. Adds it to the Dock ("Keep in Dock") and opens it.
 
+**About the Dock prompt:** macOS lets only Apple's own apps add Dock icons
+while the Dock is running, so the installer has to restart the Dock. When the
+Dock restarts, macOS brings minimized windows back on screen. The installer
+therefore asks first (`Restart the Dock? [Y/n]`), and only when the tile is
+actually being added or removed. Updates never restart the Dock. Answer `n` to
+skip the Dock and pin the app yourself later. Pass `--yes` to skip the
+question.
+
 **On a new Mac without developer tools:** the first run stops and macOS asks
 to install the "command line developer tools". Click **Install**, then
 **Agree**. The download takes several minutes and uses about 2.5 GB of disk.
@@ -45,6 +53,7 @@ To pass options through `curl`, add `-s --` after `bash`, for example
 | Option | Effect |
 | --- | --- |
 | `--no-dock` | Don't add the Dock tile |
+| `--yes` | Don't ask before restarting the Dock |
 | `--no-launch` | Don't open the app after installing |
 | `--uninstall` | Remove the app (see [Uninstall](#uninstall)) |
 | `--keep-data` | With `--uninstall`: keep your login and settings |
@@ -104,7 +113,8 @@ curl -fsSL https://raw.githubusercontent.com/bilalahamad0/mac-youtube-app/main/u
 
 From a clone, run `./uninstall.sh` (same as `./install.sh --uninstall`).
 
-This quits the app and removes:
+This quits the app and removes the items below. Removing the Dock tile needs
+a Dock restart, so it asks first, as the installer does.
 
 - `~/Applications/YouTube.app`, plus `/Applications/YouTube.app` if it was built by this project
 - its Dock tile (other Dock items are left untouched)
@@ -197,6 +207,12 @@ YouTube (⌘Space, type `YouTube`), then Control-click its Dock icon and choose
 **Applications** (or your `YT_APP_DIR` folder) and drag **YouTube** to the
 Dock. If the installer said the Dock is locked or managed, which is common on
 work and school Macs, ask your administrator.
+
+**Minimized windows popped back on screen** (for example a minimized browser).
+That happens whenever the Dock restarts. The installer restarts it only when
+the YouTube tile is added (first install) or removed (uninstall), and asks
+before doing so. To avoid it, answer `n` and use **Options → Keep in Dock**
+yourself.
 
 **"already exists and wasn't created by this installer".** Another app is
 already at `~/Applications/YouTube.app`, usually one made with Safari's
