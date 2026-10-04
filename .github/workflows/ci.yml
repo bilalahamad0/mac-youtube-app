@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: shellcheck install.sh uninstall.sh
+
+  # Builds, pins, launches, updates and uninstalls on every supported runner.
+  # GitHub's macOS runners are throwaway VMs with a logged-in Dock, so this
+  # exercises the real Dock rather than a copy.
+  install:
+    name: install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15        # Sequoia, Apple silicon
+          - macos-15-intel  # Sequoia, Intel
+          - macos-26        # Tahoe, Apple silicon
+          - macos-26-intel  # Tahoe, Intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      APP: /Users/runner/Applications/YouTube.app
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show environment
+        run: |
+          sw_vers
+          uname -m
+          xcrun swiftc --version
+
+      - name: Install
+        run: ./install.sh --no-launch
+
+      - name: Check the bundle
+        run: |
+          plutil -lint "$APP/Contents/Info.plist"
+          test "$(defaults read "$APP/Contents/Info" CFBundleIdentifier)" = com.local.youtubeapp
+          arch="$(uname -m)"
+          file "$APP/Contents/MacOS/YouTube" | grep "$arch"
+          file "$APP/Contents/Resources/AppIcon.icns" | grep "Mac OS X icon"
+          codesign --verify --strict "$APP"
+
+      - name: Check the Dock tile
+        run: |
+          apps="$(defaults read com.apple.dock persistent-apps)"
+          count="$(grep -c 'Applications/YouTube.app' <<< "$apps" || true)"
+          echo "YouTube tiles: $count"
+          test "$count" -eq 1
+
+      - name: Launch
+        run: |
+          open "$APP"
+          sleep 15
+          pgrep -f "$APP/Contents/MacOS/YouTube"
+          test -d "$HOME/Library/WebKit/com.local.youtubeapp"
+
+      # Piped like `curl | bash`. By now the Dock has restarted and may have
+      # rewritten the tile, so this also checks the tile is still recognised.
+      - name: Update while running (piped)
+        run: |
+          bash -s -- --no-launch < install.sh | tee rerun.log
+          grep -q 'already in the Dock' rerun.log
+          apps="$(defaults read com.apple.dock persistent-apps)"
+          count="$(grep -c 'Applications/YouTube.app' <<< "$apps" || true)"
+          test "$count" -eq 1
+          if pgrep -f "$APP/Contents/MacOS/YouTube"; then
+            echo "Old instance still running"
+            exit 1
+          fi
+
+      - name: Uninstall keeping data (piped)
+        run: |
+          bash -s -- --uninstall --keep-data < install.sh
+          test ! -e "$APP"
+          test -d "$HOME/Library/WebKit/com.local.youtubeapp"
+          apps="$(defaults read com.apple.dock persistent-apps)"
+          if grep -q 'Applications/YouTube.app' <<< "$apps"; then
+            echo "Dock tile still present"
+            exit 1
+          fi
+
+      - name: Reinstall without the Dock tile
+        run: |
+          ./install.sh --no-launch --no-dock
+          test -x "$APP/Contents/MacOS/YouTube"
+          apps="$(defaults read com.apple.dock persistent-apps)"
+          if grep -q 'Applications/YouTube.app' <<< "$apps"; then
+            echo "--no-dock added a tile"
+            exit 1
+          fi
+
+      # uninstall.sh's curl branch, with the download pointed at this checkout.
+      - name: Uninstall (uninstall.sh piped)
+        run: |
+          sed "s#^INSTALLER_URL=.*#INSTALLER_URL=\"file://$PWD/install.sh\"#" uninstall.sh | bash
+          test ! -e "$APP"
+          test ! -e "$HOME/Library/WebKit/com.local.youtubeapp"
+          apps="$(defaults read com.apple.dock persistent-apps)"
+          if grep -q 'Applications/YouTube.app' <<< "$apps"; then
+            echo "Dock tile still present"
+            exit 1
+          fi
