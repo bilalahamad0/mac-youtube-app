@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 APP_NAME="YouTube"
 # Kept stable across versions: WebKit stores the YouTube login under this id.
 BUNDLE_ID="com.local.youtubeapp"
@@ -276,9 +276,43 @@ func enableElementFullscreen(_ preferences: WKPreferences) {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
+final class AppWebView: WKWebView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Forward key equivalents (such as ⌘R for reload, ⌘[ / ⌘] for navigation)
+        // to the main menu before WebKit consumes them.
+        if let mainMenu = NSApp.mainMenu, mainMenu.performKeyEquivalent(with: event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        let hasReload = menu.items.contains {
+            $0.action == #selector(AppDelegate.reloadPage(_:)) ||
+            $0.action == #selector(AppDelegate.reloadPageFromOrigin(_:)) ||
+            $0.title.contains("Reload")
+        }
+        if !hasReload {
+            if menu.numberOfItems > 0 {
+                menu.addItem(NSMenuItem.separator())
+            }
+            let reloadItem = NSMenuItem(title: "Reload Page", action: #selector(AppDelegate.reloadPage(_:)), keyEquivalent: "r")
+            reloadItem.keyEquivalentModifierMask = [.command]
+            menu.addItem(reloadItem)
+        }
+        return menu
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, NSToolbarDelegate {
+    static let toolbarIdentifier = NSToolbar.Identifier("MainWindowToolbar")
+    static let reloadItemIdentifier = NSToolbarItem.Identifier("reload")
+    static let backItemIdentifier = NSToolbarItem.Identifier("back")
+    static let forwardItemIdentifier = NSToolbarItem.Identifier("forward")
+
     var window: NSWindow!
-    var webView: WKWebView!
+    var webView: AppWebView!
     var titleObservation: NSKeyValueObservation?
     var pendingURL: URL?
 
@@ -324,6 +358,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         return true
     }
 
+    func makeToolbar() -> NSToolbar {
+        let toolbar = NSToolbar(identifier: AppDelegate.toolbarIdentifier)
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        return toolbar
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        switch itemIdentifier {
+        case AppDelegate.backItemIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Back"
+            item.paletteLabel = "Back"
+            item.toolTip = "Back (⌘[)"
+            if #available(macOS 11.0, *) {
+                item.image = NSImage(systemSymbolName: "chevron.backward", accessibilityDescription: "Back")
+            }
+            item.isBordered = true
+            item.action = #selector(goBack(_:))
+            item.target = self
+            return item
+        case AppDelegate.forwardItemIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Forward"
+            item.paletteLabel = "Forward"
+            item.toolTip = "Forward (⌘])"
+            if #available(macOS 11.0, *) {
+                item.image = NSImage(systemSymbolName: "chevron.forward", accessibilityDescription: "Forward")
+            }
+            item.isBordered = true
+            item.action = #selector(goForward(_:))
+            item.target = self
+            return item
+        case AppDelegate.reloadItemIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Reload"
+            item.paletteLabel = "Reload"
+            item.toolTip = "Reload Page (⌘R)"
+            if #available(macOS 11.0, *) {
+                item.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Reload")
+            }
+            item.isBordered = true
+            item.action = #selector(reloadPage(_:))
+            item.target = self
+            return item
+        default:
+            return nil
+        }
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        return [
+            AppDelegate.backItemIdentifier,
+            AppDelegate.forwardItemIdentifier,
+            AppDelegate.reloadItemIdentifier,
+        ]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        return [
+            AppDelegate.backItemIdentifier,
+            AppDelegate.forwardItemIdentifier,
+            AppDelegate.reloadItemIdentifier,
+            .flexibleSpace,
+            .space,
+        ]
+    }
+
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        switch item.itemIdentifier {
+        case AppDelegate.backItemIdentifier:
+            return webView?.canGoBack ?? false
+        case AppDelegate.forwardItemIdentifier:
+            return webView?.canGoForward ?? false
+        case AppDelegate.reloadItemIdentifier:
+            return true
+        default:
+            return true
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(goBack(_:)) {
+            return webView?.canGoBack ?? false
+        }
+        if menuItem.action == #selector(goForward(_:)) {
+            return webView?.canGoForward ?? false
+        }
+        return true
+    }
+
     func makeWindow() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = WKWebsiteDataStore.default()
@@ -332,7 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         config.applicationNameForUserAgent = safariUserAgentSuffix()
         enableElementFullscreen(config.preferences)
 
-        webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800), configuration: config)
+        webView = AppWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800), configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
@@ -352,6 +477,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentView = webView
+        let toolbar = makeToolbar()
+        window.toolbar = toolbar
+        if #available(macOS 11.0, *) {
+            window.toolbarStyle = .unifiedCompact
+        }
         if !window.setFrameUsingName(frameAutosaveName) {
             window.center()
         }
@@ -405,7 +535,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        webView.reload()
+        if webView.url != nil {
+            webView.reload()
+        } else {
+            webView.load(URLRequest(url: homeURL))
+        }
     }
 
     // MARK: UI
@@ -459,7 +593,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     @objc func goHome(_ sender: Any?) { webView.load(URLRequest(url: homeURL)) }
     @objc func goBack(_ sender: Any?) { webView.goBack() }
     @objc func goForward(_ sender: Any?) { webView.goForward() }
-    @objc func reloadPage(_ sender: Any?) { webView.reload() }
+    @objc func reloadPage(_ sender: Any?) {
+        if webView.url != nil {
+            webView.reload()
+        } else {
+            webView.load(URLRequest(url: pendingURL ?? homeURL))
+        }
+    }
+    @objc func reloadPageFromOrigin(_ sender: Any?) {
+        if webView.url != nil {
+            webView.reloadFromOrigin()
+        } else {
+            webView.load(URLRequest(url: pendingURL ?? homeURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+        }
+    }
     @objc func zoomIn(_ sender: Any?) { webView.pageZoom = min(webView.pageZoom + 0.1, 3.0) }
     @objc func zoomOut(_ sender: Any?) { webView.pageZoom = max(webView.pageZoom - 0.1, 0.5) }
 
@@ -520,6 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
         let view = submenu("View")
         add(view, "Reload Page", #selector(reloadPage(_:)), "r", target: self)
+        add(view, "Reload from Origin", #selector(reloadPageFromOrigin(_:)), "r", [.command, .shift], target: self)
         view.addItem(NSMenuItem.separator())
         add(view, "Actual Size", #selector(actualSize(_:)), "0", target: self)
         add(view, "Zoom In", #selector(zoomIn(_:)), "+", target: self)
@@ -671,7 +819,9 @@ PLIST
 compile_swift() {
     local src="$1" out="$2"
     shift 2
-    xcrun swiftc -O -swift-version 5 "$@" "$src" -o "$out" >"$SWIFTC_LOG" 2>&1
+    local cache_dir="${TMP_DIR}/clang-module-cache"
+    mkdir -p "$cache_dir"
+    xcrun swiftc -O -swift-version 5 -module-cache-path "$cache_dir" "$@" "$src" -o "$out" >"$SWIFTC_LOG" 2>&1
 }
 
 compile_failed() {
@@ -736,12 +886,17 @@ build_bundle() {
 app_pids() {
     # The path goes through ENVIRON (awk -v would interpret backslashes), and
     # a UTF-8 locale stops ps from escaping non-ASCII characters in paths.
-    LC_ALL=en_US.UTF-8 ps -axo pid=,command= \
-        | EXE="$1/Contents/MacOS/${APP_NAME}" awk '{
+    local exe="$1/Contents/MacOS/${APP_NAME}"
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -u "$(id -u)" -f "^${exe}" 2>/dev/null || true
+        return 0
+    fi
+    LC_ALL=en_US.UTF-8 ps -axo pid=,command= 2>/dev/null \
+        | EXE="$exe" awk '{
             pid = $1
             sub(/^ *[0-9]+ +/, "")
             if (index($0, ENVIRON["EXE"]) == 1) print pid
-        }'
+        }' || true
 }
 
 quit_app() {
@@ -801,7 +956,7 @@ purge_app_data() {
         "${lib}/Saved Application State/${BUNDLE_ID}.savedState" \
         "${lib}/Application Support/${BUNDLE_ID}"; do
         if [[ -e "$path" ]]; then
-            rm -rf "$path"
+            rm -rf "$path" 2>/dev/null || true
         fi
     done
     step "Removed ${APP_NAME}.app data (login, cookies, cache, settings)"

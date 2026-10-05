@@ -85,11 +85,14 @@ cd mac-youtube-app
 | ⌘[ / ⌘] | Back / Forward (or swipe with two fingers) |
 | ⇧⌘H | YouTube home |
 | ⌘R | Reload |
+| ⇧⌘R | Reload from origin (bypass cache) |
 | ⌘+ / ⌘- / ⌘0 | Zoom in / out / actual size |
 | ⌃⌘F | Full-screen window |
 | `f` | Full-screen video (YouTube's own shortcut) |
 | ⇧⌘C | Copy the current page's link |
 | ⇧⌘O | Open the current page in your default browser |
+
+The window includes native **Back**, **Forward**, and **Reload** toolbar buttons in the titlebar. You can also right-click anywhere on the page and select **Reload Page**, or use **⌘R**.
 
 Links that leave YouTube, like those in video descriptions, open in your
 default browser.
